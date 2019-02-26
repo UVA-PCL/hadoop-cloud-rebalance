@@ -106,6 +106,7 @@ class InvalidateBlocks {
    */
   synchronized void add(final Block block, final DatanodeInfo datanode,
       final boolean log) {
+	  
     LightWeightHashSet<Block> set = node2blocks.get(datanode);
     if (set == null) {
       set = new LightWeightHashSet<Block>();

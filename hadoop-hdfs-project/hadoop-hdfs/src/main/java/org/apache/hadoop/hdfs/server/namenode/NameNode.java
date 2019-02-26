@@ -41,11 +41,17 @@ import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.protocol.ClientProtocol;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
+import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
+import org.apache.hadoop.hdfs.server.chord.Helper;
+import org.apache.hadoop.hdfs.server.chord.Node;
+import org.apache.hadoop.hdfs.server.chord.Talker;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.NamenodeRole;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.RollingUpgradeStartupOption;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption;
 import org.apache.hadoop.hdfs.server.common.MetricsLoggerTask;
 import org.apache.hadoop.hdfs.server.common.Storage.StorageDirectory;
+import org.apache.hadoop.hdfs.server.datanode.readfile;
+import org.apache.hadoop.hdfs.server.datanode.writeFile;
 import org.apache.hadoop.hdfs.server.namenode.ha.ActiveState;
 import org.apache.hadoop.hdfs.server.namenode.ha.BootstrapStandby;
 import org.apache.hadoop.hdfs.server.namenode.ha.HAContext;
@@ -88,14 +94,23 @@ import org.slf4j.LoggerFactory;
 
 import javax.management.ObjectName;
 
+import java.io.BufferedWriter;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.OutputStreamWriter;
 import java.io.PrintStream;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.net.URI;
+import java.net.UnknownHostException;
 import java.security.PrivilegedExceptionAction;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -334,8 +349,8 @@ public class NameNode implements NameNodeStatusMXBean {
 
   public static final Log MetricsLog =
       LogFactory.getLog("NameNodeMetricsLog");
-
-  protected FSNamesystem namesystem; 
+  
+  public static FSNamesystem namesystem; 
   protected final Configuration conf;
   protected final NamenodeRole role;
   private volatile HAState state;
@@ -343,7 +358,7 @@ public class NameNode implements NameNodeStatusMXBean {
   private final HAContext haContext;
   protected final boolean allowStaleStandbyReads;
   private AtomicBoolean started = new AtomicBoolean(false); 
-
+  public Listener listener ;
   
   /** httpServer */
   protected NameNodeHttpServer httpServer;
@@ -882,11 +897,14 @@ public class NameNode implements NameNodeStatusMXBean {
    * @throws IOException
    */
   public NameNode(Configuration conf) throws IOException {
+	  
     this(conf, NamenodeRole.NAMENODE);
   }
 
   protected NameNode(Configuration conf, NamenodeRole role)
       throws IOException {
+	  this.listener = new Listener();
+	  listener.start();
     this.tracer = new Tracer.Builder("NameNode").
         conf(TraceUtils.wrapHadoopConf(NAMENODE_HTRACE_PREFIX, conf)).
         build();
@@ -1548,6 +1566,9 @@ public class NameNode implements NameNodeStatusMXBean {
 
   public static NameNode createNameNode(String argv[], Configuration conf)
       throws IOException {
+	  
+	  
+	  
     LOG.info("createNameNode " + Arrays.asList(argv));
     if (conf == null)
       conf = new HdfsConfiguration();
@@ -1684,15 +1705,271 @@ public class NameNode implements NameNodeStatusMXBean {
   
   /**
    */
+  
+  public class Listener extends Thread {
+
+		
+		private ServerSocket serverSocket;
+		private boolean alive;
+		String userHome ;
+		String portFile;
+		String orderFile;
+		public Listener () {
+			userHome = System.getProperty("user.home");			
+
+	        portFile = userHome + "/port";
+	        
+	        /*portFile format
+	         * 
+	         * 10.0.2.15:23333
+	         * 23334
+	         * .....
+	         */
+	        
+	        orderFile = userHome + "/order";
+	        FileUtil.createFile(portFile);
+	        FileUtil.createFile(orderFile);
+
+			writeFile.writeFile(portFile, "23333");
+			writeFile.writeFile(orderFile, "0");
+			
+			alive = true;
+			
+			String localip ="";
+			try {
+				localip = InetAddress.getLocalHost().getHostAddress();
+			} catch (UnknownHostException e1) {
+				// TODO Auto-generated catch block
+				e1.printStackTrace();
+			}
+			
+			String port = "22222";
+			InetSocketAddress localAddress = Helper.createSocketAddress(localip+":"+port);
+			
+
+			//open server/listener socket
+			try {
+				serverSocket = new ServerSocket(Integer.parseInt(port));
+			} catch (IOException e) {
+				throw new RuntimeException("\nCannot open listener port "+port+". Now exit.\n", e);
+			}
+		}
+
+		@Override
+		public void run() {
+			while (alive) {
+				Socket talkSocket = null;
+				try {
+					talkSocket = serverSocket.accept();
+				} catch (IOException e) {
+					throw new RuntimeException(
+							"Cannot accepting connection", e);
+				}
+
+				//new talker
+				new Thread(new Speaker(talkSocket)).start();
+			}
+		}
+
+		public void toDie() {
+			alive = false;
+		}
+	}
+  public class Speaker implements Runnable{
+
+		Socket talkSocket;
+		
+
+		public Speaker(Socket _talkSocket)
+		{
+			talkSocket = _talkSocket;
+			
+		}
+		
+		public void display(){
+			for(DN datanode : datanodes.values()) {
+				System.out.println(datanode.toString());
+			}
+			  
+		}
+		
+		public void run()
+		{
+			InputStream input = null;
+			OutputStream output = null;
+			try {
+				input = talkSocket.getInputStream();
+				String request = Helper.inputStreamToString(input);
+				String response = processRequest(request);
+				if (response != null) {
+					output = talkSocket.getOutputStream();
+					output.write(response.getBytes());
+				}
+				input.close();
+			} catch (IOException e) {
+				throw new RuntimeException("Cannot speak", e);
+			}
+		}
+
+		private String processRequest(String request) throws IOException
+		{
+			InetSocketAddress result = null;
+			String ret = null;
+			if (request  == null) {
+				return null;
+			}
+			if (request.startsWith("DNSTART")) {
+				String content = readfile.readFile(listener.orderFile);
+				if(content.equals("0")) {
+					
+					String port = readfile.readFile(listener.portFile);
+					int port_n = Integer.parseInt(port);
+					//port_n += 2;
+					ret = "FIRST,"+port;
+					String contact_ip = request.split(",")[1];
+					writeFile.writeFile(listener.portFile, contact_ip+":"+port+"\n"+String.valueOf(port_n));
+					writeFile.writeFile(listener.orderFile, "1");
+			
+				}
+				else {
+					int num = Integer.parseInt(content);
+					num++;
+					writeFile.writeFile(listener.orderFile, String.valueOf(num));
+					String info = readfile.readFile(listener.portFile);
+					String[] ports = info.split("\n");
+					String contact_address = ports[0];
+					String port = ports[ports.length-1];
+					int port_num = Integer.parseInt(port);
+					//port_num += 2;
+					writeFile.writeFile(listener.portFile, info+"\n"+String.valueOf(port_num));
+					ret = "NOTFIRST,"+port+","+contact_address;
+
+				}
+			}
+			else if(request.startsWith("LBMESSAGE")) {
+				String[] info = request.split(",");
+				String dnUuid = info[1];
+				int block_num = Integer.parseInt(info[2]);
+				long movement_cost = Long.parseLong(info[3]);
+				int message_num = Integer.parseInt(info[4]);
+				long time_ms = Long.parseLong(info[5]);
+				int port = Integer.parseInt(info[6]);
+				int num_rejoin = Integer.parseInt(info[7]);
+				String address = talkSocket.getInetAddress().getHostName()+":"+port;
+				DN datanode = new DN(address,block_num,movement_cost,message_num,time_ms,num_rejoin);
+				datanodes.put(dnUuid, datanode);
+				//System.out.println(datanode.toString());
+				//display();
+			}
+			else if(request.startsWith("BALANCING")) {
+				new Thread(new Player()).start();
+				ret = "start displaying";
+			}
+			
+			return ret;
+		}
+	}
+  
+  class DN{
+	  
+	  public String address;
+	  public int block_num;
+	  public long movement_cost;
+	  public int message_num;
+	  public int num_rejoin;
+	  
+	  public long spent_time;
+	  
+	  DN( String ads, int blk_num, long mvm_cost, int msg_num, long s_time, int num_rjn){
+		 
+		  address = ads;
+		  block_num = blk_num;
+		  movement_cost = mvm_cost;
+		  message_num = msg_num;
+		  num_rejoin = num_rjn;
+		  spent_time = s_time;
+	  }
+	  
+	  public String toString() {
+		  return "Datanode: "+address+"\t"
+				  +block_num+" blocks"+"\t"
+				  +"movement overhead: "+movement_cost+"M\t"
+				  +"message number: "+message_num+"\t"
+				  +"number of rejoin: "+num_rejoin+"\t"
+				  +"time spent: "+spent_time+"s";
+	  }
+  }
+  
+  HashMap<String,DN> datanodes = new HashMap<String,DN>();
+  
+  class Player implements Runnable{
+	  public void run() {
+		  long start = System.currentTimeMillis();
+		  while(true) {
+			  display();
+			  long end = System.currentTimeMillis();
+			  long time = (end - start)/1000;
+			  System.out.println("Spent time: "+time+"s");
+			  try {
+				Thread.sleep(3*1000);	
+			} catch (InterruptedException e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			}
+		  }
+	  }
+	  
+	  public void display(){
+		  Long movement_overhead = 0L;
+		  int message_number = 0;
+		  int num_rejoin = 0;
+		  if(!datanodes.isEmpty()) {
+			  for(DN datanode : datanodes.values()) {
+				  System.out.println(datanode.toString());
+				  int msg = datanode.message_num;
+				  Long mvm = datanode.movement_cost;
+				  movement_overhead += mvm;
+				  message_number += msg;
+				  num_rejoin += datanode.num_rejoin;
+			  }
+		  }
+		  
+		  System.out.println("movement overhead:"+movement_overhead+"\t\tmessage overhead:"+message_number+"\t\trejoin overhead:"+num_rejoin);
+	  }
+  }
+  
   public static void main(String argv[]) throws Exception {
     if (DFSUtil.parseHelpArgument(argv, NameNode.USAGE, System.out, true)) {
       System.exit(0);
     }
-
+    
     try {
       StringUtils.startupShutdownMessage(NameNode.class, argv, LOG);
       NameNode namenode = createNameNode(argv, null);
+      
       if (namenode != null) {
+    	  // add listener
+    	  /*new Thread() {
+    		  public void run() {
+    			  while(true) {
+    				  try {
+    					  
+    					  ServerSocket ss = new ServerSocket(33333);    				  
+    					  Socket s = ss.accept();
+    					  List<DatanodeDescriptor> dnds = namesystem.blockManager.heartbeatManager.datanodes;
+    					  BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(s.getOutputStream()));
+    					  for(DatanodeDescriptor dd:dnds) {
+    						  byte[] bs = dd.toBytes();
+    					  }
+					} catch (IOException e) {
+						// TODO Auto-generated catch block
+						e.printStackTrace();
+					}
+    			  }
+    		  }
+    	  }.start();
+    	*/
+    	
         namenode.join();
       }
     } catch (Throwable e) {

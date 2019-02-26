@@ -17,6 +17,7 @@
  */
 package org.apache.hadoop.hdfs.server.blockmanagement;
 
+import java.io.StringWriter;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -595,6 +596,8 @@ public class DatanodeDescriptor extends DatanodeInfo {
    */
   void addBlocksToBeInvalidated(List<Block> blocklist) {
     assert(blocklist != null && blocklist.size() > 0);
+    
+    System.out.println("\n\n\n\n");
     synchronized (invalidateBlocks) {
       for(Block blk : blocklist) {
         invalidateBlocks.add(blk);

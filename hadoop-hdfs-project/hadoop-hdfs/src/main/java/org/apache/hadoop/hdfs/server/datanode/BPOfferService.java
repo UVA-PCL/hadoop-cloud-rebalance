@@ -30,6 +30,7 @@ import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.protocol.RollingUpgradeStatus;
 import org.apache.hadoop.hdfs.protocolPB.DatanodeProtocolClientSideTranslatorPB;
+import org.apache.hadoop.hdfs.server.chord.Helper;
 import org.apache.hadoop.hdfs.server.protocol.*;
 import org.apache.hadoop.hdfs.server.protocol.ReceivedDeletedBlockInfo.BlockStatus;
 
@@ -37,7 +38,9 @@ import org.slf4j.Logger;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -52,6 +55,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * It also maintains the state about which of the NNs is considered active.
  */
 @InterfaceAudience.Private
+public
 class BPOfferService {
   static final Logger LOG = DataNode.LOG;
   
@@ -196,7 +200,7 @@ class BPOfferService {
     return nameserviceId;
   }
 
-  String getBlockPoolId() {
+  public String getBlockPoolId() {
     // avoid lock contention unless the registration hasn't completed.
     String id = bpId;
     if (id != null) {
@@ -292,9 +296,125 @@ class BPOfferService {
    * client? For now we don't.
    */
   void notifyNamenodeReceivedBlock(ExtendedBlock block, String delHint,
-      String storageUuid, boolean isOnTransientStorage) {
+      String storageUuid, boolean isOnTransientStorage)  {
+	  
+	  long start = System.currentTimeMillis();
+	  
+	  long blkid = block.getBlockId();
+	  boolean transblk = false;
+	  boolean shedblk = false;
+	   
+	  if(dn.shed_receiving&&dn.m_node.shed_blkid!=null) {
+		  
+		  System.out.println("delete SHED BLOCK in the "+dn.m_node.shed_old_pre.getHostName());
+	  for(int i=0;i<dn.m_node.shed_blkid.length;i++) {
+		  long cur_blkid = Long.parseLong(dn.m_node.shed_blkid[i]);
+		  if(cur_blkid == blkid) {
+			  shedblk = true;
+			  break;
+		  }
+	  }
+	  }
+	  
+	  if(dn.receiving&&dn.m_node.trans_blkid!=null) {
+		 
+		  System.out.println("delete TRANS BLOCK in the "+dn.m_node.new_pred.getHostName());
+	  for(int i=0;i<dn.m_node.trans_blkid.length;i++) {
+		  long cur_blkid = Long.parseLong(dn.m_node.trans_blkid[i]);
+		  if(cur_blkid == blkid) {
+			  transblk = true;
+			  break;
+		  }
+	  }
+	  }
+
+	  if(dn.receiving && transblk) {
+
+		  int index = 0;
+		  synchronized(dn.receiving_blocks) {
+		  for(;index<dn.receiving_blocks.length;) {
+			  
+			  if(dn.receiving_blocks[index] == false) 
+				  index++;
+			  
+			  else break;
+		  }
+		  if(index == 0) {
+			  System.out.println("\n\ndetect TRANS block receiving, stopheartbeat for a while\n\n");
+			  dn.m_node.stopheartbeat = true;
+		  }
+		  if(index<dn.receiving_blocks.length) {
+			  System.out.println("record receiving block index:"+index);
+			  //System.out.println("record receiving block index:"+index);
+			  dn.receiving_blocks[index] = false;
+			  delHint = Helper.sendRequest(dn.m_node.new_pred, "YOURUUID");
+			  System.out.println("delHint is "+delHint);
+			  System.out.println("new_pre is "+dn.m_node.new_pred.getHostName());
+			  
+			  Calendar cal = Calendar.getInstance();
+			  SimpleDateFormat sdf = new SimpleDateFormat("HH:mm:ss");
+			  System.out.println("load balance start at "+sdf.format(cal.getTime()));
+			  
+			  dn.m_node.message_num++;
+			   
+				  if(index == dn.receiving_blocks.length-1) {// trans receiving finish
+				  	dn.receiving = false;
+				  	dn.m_node.stopheartbeat = false;
+			  	}
+		  }
+		  else dn.receiving = false;
+		  }
+		  
+	  }
+	  
+	  if(dn.shed_receiving && shedblk) {
+		  int index = 0;
+		  synchronized(dn.shed_receiving_blocks) {
+		  for(;index<dn.shed_receiving_blocks.length;) {
+			  
+			  if(dn.shed_receiving_blocks[index] == false) 
+				  index++;
+			  
+			  else break;
+		  }
+
+		  if(index == 0) {
+			  System.out.println("\n\ndetect SHED block receiving, stopheartbeat for a while\n\n");
+			  dn.m_node.stopheartbeat = true;
+		  }
+		  
+		  if(index<dn.shed_receiving_blocks.length) {
+			  System.out.println("record receiving block index:"+index);
+			  dn.shed_receiving_blocks[index] = false;
+			  delHint = Helper.sendRequest(dn.m_node.shed_old_pre, "YOURUUID");
+			  System.out.println("delHint is "+delHint);
+			  System.out.println("shed_old_pre is "+dn.m_node.shed_old_pre.getHostName());
+			  
+			  Calendar cal = Calendar.getInstance();
+			  SimpleDateFormat sdf = new SimpleDateFormat("HH:mm:ss");
+			  System.out.println("load balance start at "+sdf.format(cal.getTime()));
+			  dn.m_node.message_num++;
+			  
+				  if(index == dn.shed_receiving_blocks.length-1) {//shed receiving finish
+					  dn.shed_receiving = false;
+					  dn.m_node.shed = true;
+					  dn.m_node.stopheartbeat = false;
+				  }
+		  }
+			  
+		  }
+	  
+		 
+	  }
+  
+	  long end = System.currentTimeMillis();
+	  long time = (end - start);
+	  System.out.println("time spent "+time+"ms");
+	  
+	  
     notifyNamenodeBlock(block, BlockStatus.RECEIVED_BLOCK, delHint,
         storageUuid, isOnTransientStorage);
+	  
   }
 
   void notifyNamenodeReceivingBlock(ExtendedBlock block, String storageUuid) {
@@ -708,7 +828,8 @@ class BPOfferService {
       cmd instanceof BlockCommand? (BlockCommand)cmd: null;
     final BlockIdCommand blockIdCmd = 
       cmd instanceof BlockIdCommand ? (BlockIdCommand)cmd: null;
-
+      
+     
     switch(cmd.getAction()) {
     case DatanodeProtocol.DNA_TRANSFER:
       // Send a copy of a block to another datanode
@@ -720,7 +841,13 @@ class BPOfferService {
       // Some local block(s) are obsolete and can be 
       // safely garbage-collected.
       //
+    	System.out.println("\n\nin BPOfferService, datanode is "+this.dn.m_node.localAddress.getHostName());
+        
       Block toDelete[] = bcmd.getBlocks();
+      for(int i=0;i<toDelete.length;i++) {
+    	  System.out.println("delete block is "+toDelete[i].blockId);
+      }
+      System.out.println("\n\n");
       try {
         // using global fsdataset
         dn.getFSDataset().invalidate(bcmd.getBlockPoolId(), toDelete);

@@ -20,6 +20,8 @@ package org.apache.hadoop.hdfs.server.datanode.fsdataset.impl;
 
 import java.io.File;
 import java.io.FileDescriptor;
+import java.io.IOException;
+import java.net.InetSocketAddress;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -33,6 +35,7 @@ import java.util.concurrent.TimeUnit;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
+import org.apache.hadoop.hdfs.server.chord.Helper;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsVolumeReference;
 import org.apache.hadoop.hdfs.server.protocol.BlockCommand;
@@ -294,12 +297,13 @@ class FsDatasetAsyncDiskService {
 
       result = (trashDirectory == null) ? deleteFiles() : moveFiles();
 
-      if (!result) {
+      if (!result) {//delete file
         LOG.warn("Unexpected error trying to "
             + (trashDirectory == null ? "delete" : "move")
             + " block " + block.getBlockPoolId() + " " + block.getLocalBlock()
             + " at file " + blockFile + ". Ignored.");
-      } else {
+      }
+      else {//move file
         if(block.getLocalBlock().getNumBytes() != BlockCommand.NO_ACK){
           datanode.notifyNamenodeDeletedBlock(block, volume.getStorageID());
         }
@@ -307,7 +311,93 @@ class FsDatasetAsyncDiskService {
         volume.onMetaFileDeletion(block.getBlockPoolId(), metaLength);
         LOG.info("Deleted " + block.getBlockPoolId() + " "
             + block.getLocalBlock() + " file " + blockFile);
+        
+        boolean trans_blk = false;
+        boolean shed_blk = false;
+        String[] trans_blkid;
+        String[] shed_blkid;
+        String cur_blkid = String.valueOf(block.getBlockId());
+        
+        
+        if(datanode.m_node.trans_transferring) {
+        	if(datanode.m_node.trans_blkid != null) {
+        	synchronized(datanode.m_node.trans_blkid) {
+        	trans_blkid= datanode.m_node.trans_blkid;        
+        	for(int i=0;i<trans_blkid.length;i++) {
+        		if(cur_blkid.equals(trans_blkid[i])) {
+        			LOG.info("the block which should be deleted is trans_block, block id is:"+cur_blkid);
+        			trans_blk = true;
+        		}
+        	}
+        	}
+        	}
+        }
+        
+        if(datanode.m_node.shed_transferring) {
+        	if(datanode.m_node.shed_blkid != null) {
+        	synchronized(datanode.m_node.shed_blkid) {
+        	shed_blkid= datanode.m_node.shed_blkid;
+        	for(int i=0;i<shed_blkid.length;i++) {
+        		if(cur_blkid.equals(shed_blkid[i])) {
+        			LOG.info("the block which should be deleted is shed_block, block id is:"+cur_blkid);
+        			shed_blk = true;
+        		}
+            	
+        	}
+        	}
+        	}
+        }
+        
+       
+        if(datanode.m_node.shed_transferring && shed_blk) {
+        	 synchronized(datanode.m_node.shed_transferring_blk_num) {
+        	  datanode.m_node.shed_transferring_blk_num--;
+        	  System.out.println("shed_transferring: "+datanode.m_node.shed_transferring_blk_num);
+        	  try {
+      			System.out.println("datanode storage = "+datanode.m_node.getDFSUsed());
+      		} catch (IOException e) {
+      			// TODO Auto-generated catch block
+      			e.printStackTrace();
+      		}
+        	  if(datanode.m_node.shed_transferring_blk_num == 0) {
+        		  InetSocketAddress old_succ = datanode.m_node.shed_old_succ; 
+        		  System.out.println("send finish shed_trans to old_succ:"+old_succ.getHostName());
+        		  Helper.sendRequest(old_succ, "SHEDTRANSFIN");
+        		  datanode.m_node.message_num++;
+        		  datanode.m_node.shed_transferring = false;
+        		System.out.println("shed_transferring finish");
+        	  }
+          }
+        }
+        
+        
+        if(datanode.m_node.trans_transferring && trans_blk) {
+          synchronized(datanode.m_node.trans_transferring_blk_num) {
+      	  datanode.m_node.trans_transferring_blk_num--;
+      	  System.out.println("trans_transferring: "+datanode.m_node.trans_transferring_blk_num);
+      	  try {
+			System.out.println("datanode storage = "+datanode.m_node.getDFSUsed());
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+      	  
+      	  if(datanode.m_node.trans_transferring_blk_num == 0) {
+      		  InetSocketAddress new_succ = datanode.m_node.trans_new_succ;
+      		System.out.println("send finish tran_trans to new_succ:"+new_succ.getHostName());
+      		Helper.sendRequest(new_succ, "TRANSTRANSFIN");
+      		datanode.m_node.message_num++;
+      		datanode.m_node.trans_transferring = false;
+      		System.out.println("trans_transferring finish");
+      	  }
+      	  
+        }
+        }
+        
       }
+      
+      
+      
       updateDeletedBlockId(block);
       IOUtils.cleanup(null, volumeRef);
     }

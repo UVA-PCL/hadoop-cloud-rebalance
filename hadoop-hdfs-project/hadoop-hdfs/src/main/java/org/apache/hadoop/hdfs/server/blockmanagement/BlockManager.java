@@ -1346,6 +1346,7 @@ public class BlockManager implements BlockStatsMXBean {
     if (b.getCorrupted().isDeleted()) {
       blockLog.debug("BLOCK markBlockAsCorrupt: {} cannot be marked as" +
           " corrupt as it does not belong to any file", b);
+     
       addToInvalidates(b.getCorrupted(), node);
       return;
     } 
@@ -2504,29 +2505,74 @@ public class BlockManager implements BlockStatsMXBean {
       Block reported, ReplicaState reportedState, 
       BlockInfo storedBlock, BlockUCState ucState,
       DatanodeDescriptor dn) {
+	  
+	  /*
+	  System.out.println("\n\n\n\nin block manager");
+ 	  System.out.println("datanode and blcok information:");
+ 	  System.out.println("datanode is "+dn.xferAddr);
+ 	  System.out.println("reported time stamp = "+reported.getGenerationStamp());
+ 	  System.out.println("stored time stamp = "+storedBlock.getGenerationStamp());
+ 	  System.out.println("replicaState = "+reportedState);
+ 	 System.out.println("blockUCState = "+ucState);
+      System.out.println("\n\n\n\n");
+	  */
+	  
     switch(reportedState) {
+    
     case FINALIZED:
+    	
       switch(ucState) {
+      
       case COMPLETE:
       case COMMITTED:
+    	  
         if (storedBlock.getGenerationStamp() != reported.getGenerationStamp()) {
           final long reportedGS = reported.getGenerationStamp();
+          
+          /*
+          System.out.println("\n\n\n\nin block manager");
+     	  System.out.println("reason is timestamp mismatch, stored timestamp does not equal reported timestamp");
+     	  System.out.println("datanode and blcok information:");
+     	  System.out.println("datanode is "+dn.xferAddr);
+     	  System.out.println("reported time stamp = "+reported.getGenerationStamp());
+     	  System.out.println("stored time stamp = "+storedBlock.getGenerationStamp());
+          System.out.println("\n\n\n\n");
+          */
           return new BlockToMarkCorrupt(storedBlock, reportedGS,
               "block is " + ucState + " and reported genstamp " + reportedGS
               + " does not match genstamp in block map "
               + storedBlock.getGenerationStamp(), Reason.GENSTAMP_MISMATCH);
+          
+          
+          
         } else if (storedBlock.getNumBytes() != reported.getNumBytes()) {
+        	/*
+        	 System.out.println("\n\n\n\nin block manager");
+        	 System.out.println("reason is size_mismatch");
+        	 System.out.println("datanode and blcok information:");
+        	 System.out.println("datanode is "+dn.xferAddr);
+        	 System.out.println("reported size = "+reported.getNumBytes());
+        	 System.out.println("stored size = "+storedBlock.getNumBytes());
+             System.out.println("\n\n\n\n");
+              */                      
           return new BlockToMarkCorrupt(storedBlock,
               "block is " + ucState + " and reported length " +
               reported.getNumBytes() + " does not match " +
               "length in block map " + storedBlock.getNumBytes(),
               Reason.SIZE_MISMATCH);
+          
+          
         } else {
           return null; // not corrupt
         }
       case UNDER_CONSTRUCTION:
         if (storedBlock.getGenerationStamp() > reported.getGenerationStamp()) {
           final long reportedGS = reported.getGenerationStamp();
+          /*
+          System.out.println("\n\n\n\nin block manager");
+     	  System.out.println("reason is timestamp mismatch, stored timestamp is bigger than reported timestamp");
+          System.out.println("\n\n\n\n");
+          */
           return new BlockToMarkCorrupt(storedBlock, reportedGS, "block is "
               + ucState + " and reported state " + reportedState
               + ", But reported genstamp " + reportedGS
@@ -2542,6 +2588,17 @@ public class BlockManager implements BlockStatsMXBean {
       if (!storedBlock.isComplete()) {
         return null; // not corrupt
       } else if (storedBlock.getGenerationStamp() != reported.getGenerationStamp()) {
+    	  
+    	  /*
+    	  System.out.println("\n\n\n\nin block manager");
+     	  System.out.println("reason is timestamp mismatch, stored timestamp does not equal reported timestamp");
+     	  System.out.println("datanode and blcok information:");
+     	  System.out.println("datanode is "+dn.xferAddr);
+     	  System.out.println("reported time stamp = "+reported.getGenerationStamp());
+     	  System.out.println("stored time stamp = "+storedBlock.getGenerationStamp());
+          System.out.println("\n\n\n\n");
+    	  */
+    	  
         final long reportedGS = reported.getGenerationStamp();
         return new BlockToMarkCorrupt(storedBlock, reportedGS,
             "reported " + reportedState + " replica with genstamp " + reportedGS
@@ -2558,6 +2615,14 @@ public class BlockManager implements BlockStatsMXBean {
               "complete with the same genstamp");
           return null;
         } else {
+        	
+        	/*
+          System.out.println("\n\n\n\nin block manager");
+          System.out.println("case:RWR\nstored block is complete && time stamps are the same && replicaState != RBW");
+       	  System.out.println("reason is timestamp mismatch, stored timestamp does not equal reported timestamp");
+          System.out.println("\n\n\n\n");
+        	*/
+        	
           return new BlockToMarkCorrupt(storedBlock,
               "reported replica has invalid state " + reportedState,
               Reason.INVALID_STATE);
@@ -2570,7 +2635,12 @@ public class BlockManager implements BlockStatsMXBean {
       + " for block: " + storedBlock + 
       " on " + dn + " size " + storedBlock.getNumBytes();
       // log here at WARN level since this is really a broken HDFS invariant
+      /*
+      System.out.println("\n\n\n\nin block manager");
+ 	  System.out.println(msg);
+      System.out.println("\n\n\n\n");
       LOG.warn(msg);
+      */
       return new BlockToMarkCorrupt(storedBlock, msg, Reason.INVALID_STATE);
     }
   }

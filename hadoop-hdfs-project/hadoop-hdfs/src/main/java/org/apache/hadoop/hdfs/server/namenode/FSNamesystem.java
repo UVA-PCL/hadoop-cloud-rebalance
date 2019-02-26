@@ -432,10 +432,10 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
 
   /** The namespace tree. */
   FSDirectory dir;
-  private final BlockManager blockManager;
+  public final BlockManager blockManager;
   private final SnapshotManager snapshotManager;
   private final CacheManager cacheManager;
-  private final DatanodeStatistics datanodeStatistics;
+  public final DatanodeStatistics datanodeStatistics;
 
   private String nameserviceId;
 

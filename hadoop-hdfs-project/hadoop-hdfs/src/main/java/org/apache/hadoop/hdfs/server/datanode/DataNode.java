@@ -16,8 +16,9 @@
  * limitations under the License.
  */
 package org.apache.hadoop.hdfs.server.datanode;
-
-
+import org.apache.hadoop.hdfs.server.datanode.readfile.*;
+import org.apache.hadoop.hdfs.server.datanode.writeFile.*;
+import org.apache.hadoop.hdfs.server.chord.*;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_ADDRESS_DEFAULT;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_ADDRESS_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_DATA_DIR_KEY;
@@ -64,6 +65,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.PrintStream;
 import java.lang.management.ManagementFactory;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.URI;
@@ -81,6 +83,7 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Scanner;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Callable;
@@ -219,6 +222,8 @@ import com.google.common.cache.LoadingCache;
 import com.google.common.collect.Lists;
 import com.google.protobuf.BlockingService;
 
+
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -307,10 +312,26 @@ public class DataNode extends ReconfigurableBase
     return NetUtils.createSocketAddr(target);
   }
   
+  //chord variable
+  public Node m_node;
+  public InetSocketAddress m_contact;
+  public Helper m_helper = new Helper();
+  
+  
+  public boolean shed_ready_to_receive = false;
+  public boolean ready_to_receive = false;
+  public boolean ready_to_transfer = false;
+  
+  public boolean[] shed_receiving_blocks;
+  public boolean shed_receiving = false;
+  
+  public boolean[] receiving_blocks;
+  public boolean receiving = false;
+  
   volatile boolean shouldRun = true;
   volatile boolean shutdownForUpgrade = false;
   private boolean shutdownInProgress = false;
-  private BlockPoolManager blockPoolManager;
+  public BlockPoolManager blockPoolManager;
   volatile FsDatasetSpi<? extends FsVolumeSpi> data = null;
   private String clusterId = null;
 
@@ -323,7 +344,7 @@ public class DataNode extends ReconfigurableBase
   private DNConf dnConf;
   private volatile boolean heartbeatsDisabledForTests = false;
   private volatile boolean cacheReportsDisabledForTests = false;
-  private DataStorage storage = null;
+  public DataStorage storage = null;
 
   private DatanodeHttpServer httpServer = null;
   private int infoPort;
@@ -336,7 +357,7 @@ public class DataNode extends ReconfigurableBase
   private LoadingCache<String, Map<String, Long>> datanodeNetworkCounts;
 
   private String hostName;
-  private DatanodeID id;
+  public DatanodeID id;
   
   final private String fileDescriptorPassingDisabledReason;
   boolean isBlockTokenEnabled;
@@ -1112,6 +1133,9 @@ public class DataNode extends ReconfigurableBase
   // calls specific to BP
   public void notifyNamenodeReceivedBlock(ExtendedBlock block, String delHint,
       String storageUuid, boolean isOnTransientStorage) {
+	  
+	  ////
+	  
     BPOfferService bpos = blockPoolManager.get(block.getBlockPoolId());
     if(bpos != null) {
       bpos.notifyNamenodeReceivedBlock(block, delHint, storageUuid,
@@ -1543,7 +1567,7 @@ public class DataNode extends ReconfigurableBase
     initDirectoryScanner(conf);
   }
 
-  List<BPOfferService> getAllBpOs() {
+  public List<BPOfferService> getAllBpOs() {
     return blockPoolManager.getAllNamenodeThreads();
   }
 
@@ -1852,6 +1876,11 @@ public class DataNode extends ReconfigurableBase
    * Otherwise, deadlock might occur.
    */
   public void shutdown() {
+	  
+	 //shut down chord first
+	 m_node.stopAllThreads();
+	 LOG.debug("Leaving the ring...\n");
+	  
     stopMetricsLogger();
     if (plugins != null) {
       for (ServicePlugin p : plugins) {
@@ -2093,6 +2122,7 @@ public class DataNode extends ReconfigurableBase
   }
 
   @VisibleForTesting
+public
   void transferBlock(ExtendedBlock block, DatanodeInfo[] xferTargets,
       StorageType[] xferTargetStorageTypes) throws IOException {
     BPOfferService bpos = getBPOSForBlock(block);
@@ -2102,7 +2132,7 @@ public class DataNode extends ReconfigurableBase
     boolean replicaStateNotFinalized = false;
     boolean blockFileNotExist = false;
     boolean lengthTooShort = false;
-
+    
     try {
       data.checkBlock(block, block.getNumBytes(), ReplicaState.FINALIZED);
     } catch (ReplicaNotFoundException e) {
@@ -2156,7 +2186,7 @@ public class DataNode extends ReconfigurableBase
     }
   }
 
-  void transferBlocks(String poolId, Block blocks[],
+  public void transferBlocks(String poolId, Block blocks[],
       DatanodeInfo xferTargets[][], StorageType[][] xferTargetStorageTypes) {
     for (int i = 0; i < blocks.length; i++) {
       try {
@@ -2262,7 +2292,7 @@ public class DataNode extends ReconfigurableBase
    * Used for transferring a block of data.  This class
    * sends a piece of data to another DataNode.
    */
-  private class DataTransfer implements Runnable {
+  public class DataTransfer implements Runnable {
     final DatanodeInfo[] targets;
     final StorageType[] targetStorageTypes;
     final ExtendedBlock b;
@@ -2547,8 +2577,81 @@ public class DataNode extends ReconfigurableBase
     }
     return dn;
   }
+  
+  
+  
+  public String NNip = null;
+  void join() throws IOException {
+	  /*
+	   * chord part
+	   */
+	  
+	  for (BPOfferService bpos : blockPoolManager.getAllNamenodeThreads()) {
+	      if (bpos != null) {
+	        for (BPServiceActor actor : bpos.getBPServiceActors()) {
+	          NNip = actor.getNNSocketAddress().getHostName();
+	        }
+	      }
+	    }
+	  InetSocketAddress NameNode = Helper.createSocketAddress(NNip+":22222");
+//-----------------------------------------------------------------------------------------------------------------------
+	  
+	  String local_ip = null;
+		try {
+			local_ip = InetAddress.getLocalHost().getHostAddress();
 
-  void join() {
+		} catch (UnknownHostException e1) {
+			// TODO Auto-generated catch block
+			e1.printStackTrace();
+		}
+		
+	
+		String response = Helper.sendRequest(NameNode, "DNSTART,"+local_ip);
+		
+		System.out.println("get message from NN:"+response);
+		
+		if (response.startsWith("FIRST")) {			
+			String port = response.split(",")[1];
+			InetSocketAddress me = Helper.createSocketAddress(local_ip+":"+port);
+			m_node = new Node (me,this,me);
+			//m_node.initializeVector();
+			m_contact = m_node.getAddress();
+		}
+		// join, contact is another node
+		else{			
+			String[] info = response.split(",");
+			String contact_address = info[2];
+			String port = info[1];
+			m_contact = Helper.createSocketAddress(contact_address);
+			m_node = new Node (Helper.createSocketAddress(local_ip+":"+port),this,m_contact);
+			
+			
+			if (m_contact == null) {
+				System.out.println("Cannot find address you are trying to contact. Now exit.");
+				return;
+			}	
+		}
+				
+		
+				
+		// try to join ring from contact node
+		boolean successful_join = m_node.join(m_contact);
+				
+		// fail to join contact node
+		if (!successful_join) {
+			System.out.println("Cannot connect with node you are trying to contact. Now exit.");
+			System.exit(0);
+		}
+		
+		// print join info
+		
+		System.out.println("Joining the Chord ring.");
+		System.out.println("Local IP: "+local_ip);
+		m_node.printNeighbors();
+		System.out.println("incremental compile");
+				
+//-----------------------------------------------------------------------------------------------------------------------		
+		
     while (shouldRun) {
       try {
         blockPoolManager.joinAll();

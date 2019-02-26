@@ -23,7 +23,10 @@ import java.io.IOException;
 import java.io.PrintStream;
 import java.net.InetSocketAddress;
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.text.DateFormat;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
@@ -31,7 +34,6 @@ import java.util.Date;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedList;
-import java.util.List;
 import java.util.Set;
 
 import org.apache.commons.logging.Log;
@@ -52,6 +54,7 @@ import org.apache.hadoop.hdfs.server.balancer.Dispatcher.Task;
 import org.apache.hadoop.hdfs.server.balancer.Dispatcher.Util;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockPlacementPolicy;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockPlacementPolicyDefault;
+import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
 import org.apache.hadoop.hdfs.server.namenode.UnsupportedActionException;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorageReport;
 import org.apache.hadoop.hdfs.server.protocol.StorageReport;
@@ -201,7 +204,7 @@ public class Balancer {
   private final BalancingPolicy policy;
   private final Set<String> sourceNodes;
   private final boolean runDuringUpgrade;
-  private final double threshold;
+  private double threshold;
   private final long maxSizeToMove;
   private final long defaultBlockSize;
 
@@ -234,7 +237,7 @@ public class Balancer {
     return v;
   }
 
-  static long getLongBytes(Configuration conf, String key, long defaultValue) {
+  public static long getLongBytes(Configuration conf, String key, long defaultValue) {
     final long v = conf.getLongBytes(key, defaultValue);
     LOG.info(key + " = " + v + " (default=" + defaultValue + ")");
     if (v <= 0) {
@@ -363,33 +366,64 @@ public class Balancer {
               + " but it is not specified as a source; skipping it.");
           continue;
         }
-
+        
+        
+        
         final double utilizationDiff = utilization - average;
+        
         final long capacity = getCapacity(r, t);
+        double threshold_temp = threshold;
+        threshold = 0.0;
         final double thresholdDiff = Math.abs(utilizationDiff) - threshold;
-        final long maxSize2Move = computeMaxSize2Move(capacity,
+        long maxSize2Move = computeMaxSize2Move(capacity,
             getRemaining(r, t), utilizationDiff, maxSizeToMove);
-
+        
+        
+        if(utilizationDiff < 0) {//underloaded node
+        	final double diff = Math.abs(utilizationDiff);
+        	long maxSize_ToMove = percentage2bytes(diff, capacity);
+        	maxSize2Move = Math.min(maxSizeToMove, maxSize_ToMove);
+        }
+        else {//overloaded node
+        	final double diff = Math.abs(utilizationDiff);
+        	long maxSize_ToMove = percentage2bytes(diff, capacity);
+        	maxSize2Move = Math.min(maxSizeToMove, maxSize_ToMove);
+        }
+        /*
+        private static long computeMaxSize2Move(final long capacity, final long remaining,
+        	      final double utilizationDiff, final long max) {
+        	    final double diff = Math.abs(utilizationDiff);
+        	    long maxSizeToMove = percentage2bytes(diff, capacity);
+        	    if (utilizationDiff < 0) {
+        	      maxSizeToMove = Math.min(remaining, maxSizeToMove);
+        	    }
+        	    return Math.min(max, maxSizeToMove);
+        	  }
+        */
+        
         final StorageGroup g;
         if (utilizationDiff > 0) {
           final Source s = dn.addSource(t, maxSize2Move, dispatcher);
           if (thresholdDiff <= 0) { // within threshold
-            aboveAvgUtilized.add(s);
+            //aboveAvgUtilized.add(s);
           } else {
             overLoadedBytes += percentage2bytes(thresholdDiff, capacity);
             overUtilized.add(s);
           }
           g = s;
-        } else {
+          dispatcher.getStorageGroupMap().put(g);
+        } 
+        else if(utilizationDiff < 0){
           g = dn.addTarget(t, maxSize2Move);
           if (thresholdDiff <= 0) { // within threshold
-            belowAvgUtilized.add(g);
+            //belowAvgUtilized.add(g);
           } else {
             underLoadedBytes += percentage2bytes(thresholdDiff, capacity);
             underUtilized.add(g);
           }
+          dispatcher.getStorageGroupMap().put(g);
         }
-        dispatcher.getStorageGroupMap().put(g);
+        
       }
     }
 
@@ -469,16 +503,18 @@ public class Balancer {
      * Note only overutilized datanodes that haven't had that max bytes to move
      * satisfied in step 1 are selected
      */
-    LOG.info("chooseStorageGroups for " + matcher + ": overUtilized => belowAvgUtilized");
-    chooseStorageGroups(overUtilized, belowAvgUtilized, matcher);
+    
+    //LOG.info("chooseStorageGroups for " + matcher + ": overUtilized => belowAvgUtilized");
+    //chooseStorageGroups(overUtilized, belowAvgUtilized, matcher);
 
     /* match each remaining underutilized datanode (target) to 
      * above average utilized datanodes (source).
      * Note only underutilized datanodes that have not had that max bytes to
      * move satisfied in step 1 are selected.
      */
-    LOG.info("chooseStorageGroups for " + matcher + ": underUtilized => aboveAvgUtilized");
-    chooseStorageGroups(underUtilized, aboveAvgUtilized, matcher);
+    
+    //LOG.info("chooseStorageGroups for " + matcher + ": underUtilized => aboveAvgUtilized");
+    //chooseStorageGroups(underUtilized, aboveAvgUtilized, matcher);
   }
 
   /**
@@ -486,22 +522,126 @@ public class Balancer {
    * datanodes or the candidates are source nodes with (utilization > Avg), and
    * the others are target nodes with (utilization < Avg).
    */
+  //groups is overloaded nodes(sources), candidates is underloaded nodes(targets) 
   private <G extends StorageGroup, C extends StorageGroup>
       void chooseStorageGroups(Collection<G> groups, Collection<C> candidates,
           Matcher matcher) {
-    for(final Iterator<G> i = groups.iterator(); i.hasNext();) {
-      final G g = i.next();
-      for(; choose4One(g, candidates, matcher); );
-      if (!g.hasSpaceForScheduling()) {
-        i.remove();
+	  List<G> sources = new ArrayList<G>();
+	  List<C> targets = new ArrayList<C>();
+	  
+	  for(final Iterator<G> i = groups.iterator(); i.hasNext();) {
+		  G g = i.next();
+		  sources.add(g);
+		  LOG.info("adding "+g.getDisplayName()+" into groups");
+		  //i.next().maxSize2Move
+	  }
+	  for(final Iterator<C> i = candidates.iterator(); i.hasNext();) {
+		  C c =i.next();
+		  targets.add(c);
+		  LOG.info("adding "+c.getDisplayName()+" into cadidates");
+	  }
+	  LOG.info("in chooseStorageGroups after add gourps and candidates");
+	  for(int i=0;i<sources.size();i++) {
+		  for(int j = 0; j < sources.size()-1; j++) {
+			  long capacity_usedj = sources.get(j).maxSize2Move;
+				long capacity_usedj1 = sources.get(j+1).maxSize2Move; 
+				if( capacity_usedj >= capacity_usedj1) {
+					G swap = sources.get(j);
+					sources.set(j, sources.get(j+1)) ;
+					sources.set(j+1, swap) ;
+				}
+		  }
+	  }
+	  LOG.info("after sorting sources:");
+	  for(int i=0;i<sources.size();i++) {
+		  G g = sources.get(i);
+		  LOG.info("source "+(i+1)+g.getDisplayName());
+	  }
+	  
+	  for(int i=0;i<targets.size();i++) {
+		  for(int j = 0; j < targets.size()-1; j++) {
+			  long capacity_usedj = targets.get(j).maxSize2Move;
+			  long capacity_usedj1 = targets.get(j+1).maxSize2Move; 
+			  if( capacity_usedj >= capacity_usedj1) {
+				  C swap = targets.get(j);
+				  targets.set(j, targets.get(j+1)) ;
+				  targets.set(j+1, swap) ;
+			  }
+		  }
+	  }
+	  
+	  LOG.info("after sorting targets:");
+	  for(int i=0;i<targets.size();i++) {
+		  C c = targets.get(i);
+		  LOG.info("target "+(i+1)+c.getDisplayName());
+	  }
+	  
+	  for(int i=0;i<sources.size();i++) {
+		  G g = sources.get(i);
+		  LOG.info("for source "+g.getDisplayName()+" chooose targets");
+		  choose4One(g, targets, matcher);
+	  }
+	  /*
+      for(final Iterator<G> i = groups.iterator(); i.hasNext();) {
+    	  final G g = i.next();
+    	  for(; choose4One(g, candidates, matcher); );
+    	  if (!g.hasSpaceForScheduling()) {
+    		  i.remove();
+    	  }
       }
-    }
+      */
   }
 
   /**
    * For the given datanode, choose a candidate and then schedule it.
    * @return true if a candidate is chosen; false if no candidates is chosen.
    */
+  
+  private <C extends StorageGroup> boolean choose4One(StorageGroup g,
+	      List<C> targets, Matcher matcher) {
+	    long schedule = g.maxSize2Move;
+	    LOG.info(g.getDisplayName()+" is instance of source: " + (g instanceof Source));
+	    LOG.info("begin choosing targets for "+g.getDisplayName());
+	    for(;schedule>0 && !targets.isEmpty();) {
+	    	LOG.info("remaining size to be scheduled: "+schedule);
+	    	C chosen = targets.get(0);
+	    	if (chosen == null) {
+	  	      return false;
+	  	    }
+	    	schedule -= chosen.maxSize2Move;
+	    	if (g instanceof Source) {
+	  	      matchSourceWithTargetToMove((Source)g, chosen);
+	  	    } 
+	    	/*
+	    	else {
+	  	      matchSourceWithTargetToMove((Source)chosen, g);
+	  	    }
+	  	    */
+	  	    if (!chosen.hasSpaceForScheduling()) {
+	  	      targets.remove(0);
+	  	    }
+	    }
+	    return true;
+	    
+	    /*
+	    final Iterator<C> i = candidates.iterator();
+	    final C chosen = chooseCandidate(g, i, matcher);
+	  
+	    if (chosen == null) {
+	      return false;
+	    }
+	    if (g instanceof Source) {
+	      matchSourceWithTargetToMove((Source)g, chosen);
+	    } else {
+	      matchSourceWithTargetToMove((Source)chosen, g);
+	    }
+	    if (!chosen.hasSpaceForScheduling()) {
+	      i.remove();
+	    }
+	    return true;
+	    */
+	  }
+  
   private <C extends StorageGroup> boolean choose4One(StorageGroup g,
       Collection<C> candidates, Matcher matcher) {
     final Iterator<C> i = candidates.iterator();
@@ -762,9 +902,10 @@ public class Balancer {
      * 
      * @param args command specific arguments.
      * @return exit code. 0 indicates success, non-zero indicates failure.
+     * @throws URISyntaxException 
      */
     @Override
-    public int run(String[] args) {
+    public int run(String[] args) throws URISyntaxException {
       final long startTime = Time.monotonicNow();
       final Configuration conf = getConf();
 
@@ -772,6 +913,7 @@ public class Balancer {
         checkReplicationPolicyCompatibility(conf);
 
         final Collection<URI> namenodes = DFSUtil.getInternalNsRpcUris(conf);
+        namenodes.add(new URI("hdfs://10.0.2.15:9000"));
         return Balancer.run(namenodes, parse(args), conf);
       } catch (IOException e) {
         System.out.println(e + ".  Exiting ...");

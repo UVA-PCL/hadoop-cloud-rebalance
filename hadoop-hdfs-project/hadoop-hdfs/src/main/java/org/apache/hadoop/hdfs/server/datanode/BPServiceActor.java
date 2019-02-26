@@ -559,6 +559,11 @@ class BPServiceActor implements Runnable {
     // Now loop for a long time....
     //
     while (shouldRun()) {
+    	if(dn.m_node.stopheartbeat != null && dn.m_node.stopheartbeat) {
+    		System.out.println("\n\nreceiving blocks, delay heartbeat\n\n");
+    		dn.m_node.stopheartbeat = false;
+    		Thread.sleep(10*1000);
+    	}
       try {
         final long startTime = scheduler.monotonicNow();
 

@@ -42,12 +42,12 @@ import org.slf4j.Logger;
  * objects must be done via APIs in this class.
  */
 @InterfaceAudience.Private
-class BlockPoolManager {
+public class BlockPoolManager {
   private static final Logger LOG = DataNode.LOG;
   
   private final Map<String, BPOfferService> bpByNameserviceId =
     Maps.newHashMap();
-  private final Map<String, BPOfferService> bpByBlockPoolId =
+  public final Map<String, BPOfferService> bpByBlockPoolId =
     Maps.newHashMap();
   private final List<BPOfferService> offerServices =
       new CopyOnWriteArrayList<>();
@@ -77,7 +77,7 @@ class BlockPoolManager {
    *
    * Caution: The BPOfferService returned could be shutdown any time.
    */
-  synchronized List<BPOfferService> getAllNamenodeThreads() {
+  public synchronized List<BPOfferService> getAllNamenodeThreads() {
     return Collections.unmodifiableList(offerServices);
   }
       
