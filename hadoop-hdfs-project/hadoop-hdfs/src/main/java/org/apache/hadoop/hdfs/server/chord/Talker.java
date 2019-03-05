@@ -153,7 +153,7 @@ public class Talker implements Runnable{
 		
 		else if(request.startsWith("YOURUUID")) {
 			 //return local.dn.storage.getDatanodeUuid();
-			return local.dn.id.datanodeUuid;
+			return local.dn.id.getDatanodeUuid();
 		}
 		else if(request.startsWith("SHARELOAD")) {
 			String[] partition = request.split(",");
@@ -365,7 +365,7 @@ public class Talker implements Runnable{
 					BlockListAsLongs bl = entry.getValue();
 					
 					for(BlockReportReplica b : bl) {
-						if(b.blockId != Long.parseLong(BlockId)) continue;
+						if(b.getBlockId() != Long.parseLong(BlockId)) continue;
 						try {
 					        // using global fsdataset
 							Block[] toDelete = {b};

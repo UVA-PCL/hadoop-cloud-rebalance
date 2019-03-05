@@ -1455,11 +1455,11 @@ public class DatanodeManager {
         //check block invalidation
         Block[] blks = nodeinfo.getInvalidateBlocks(blockInvalidateLimit);
         if (blks != null) {
-        	System.out.println("\n\n\n\nin datanode manager, delete some invalidate blocks");
-        	System.out.println("datanode is "+nodeReg.xferAddr);
-        	for(Block b:blks) System.out.println("delete block: "+b.blockId);
-        	System.out.println("\n\n\n\n");
-          cmds.add(new BlockCommand(DatanodeProtocol.DNA_INVALIDATE,
+              System.out.println("\n\n\n\nin datanode manager, delete some invalidate blocks");
+              System.out.println("datanode is "+nodeReg.getXferAddr());
+              for(Block b:blks) System.out.println("delete block: "+b.getBlockId());
+              System.out.println("\n\n\n\n");
+              cmds.add(new BlockCommand(DatanodeProtocol.DNA_INVALIDATE,
               blockPoolId, blks));
         }
         boolean sendingCachingCommands = false;

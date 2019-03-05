@@ -224,12 +224,12 @@ public class Node {
 				}
 				
 				System.out.println("there are "+i+" blocks to be transferred");
-				String shedinfo = "READYTOSHED_"+i+"_"+dn.id.datanodeUuid+"_"+addr;
+				String shedinfo = "READYTOSHED_"+i+"_"+dn.id.getDatanodeUuid()+"_"+addr;
 				shed_blkid = new String[blocks.length];
 				for(int i1=0;i1<blocks.length;i1++) {
-					shed_blkid[i1] = String.valueOf(blocks[i1].blockId);
-					shedinfo += "_"+blocks[i1].blockId;
-					System.out.println("transfer block:"+blocks[i1].blockId);
+					shed_blkid[i1] = String.valueOf(blocks[i1].getBlockId());
+					shedinfo += "_"+blocks[i1].getBlockId();
+					System.out.println("transfer block:"+blocks[i1].getBlockId());
 				}
 				shed_transferring_blk_num = blocks.length;
 
@@ -312,7 +312,7 @@ public class Node {
 				try {
 					for(int i1=0;i1<blocks.length;i1++) {
 						System.out.println("this time transfer block:"+blocks[i1].getBlockId()+", in block pool:"+poolId);
-						Log.info("target node is:"+Targets[0].xferAddr);
+						Log.info("target node is:"+Targets[0].getXferAddr());
 						dn.transferBlock( new ExtendedBlock(poolId, blocks[i1]), Targets, TargetStorageTypes);
 						//dn.metrics.incrBlocksRemoved(toDelete.length);
 						
@@ -354,7 +354,7 @@ public class Node {
 				
 				
 				for(Block b : bl) {
-					System.out.println("in the second out loop, block id = "+b.blockId);
+					System.out.println("in the second out loop, block id = "+b.getBlockId());
 					boolean contained = false;
 					long bl_size = b.getNumBytes();
 					System.out.println("schedule size = "+schedule);
@@ -391,8 +391,8 @@ public class Node {
 				trans_blkid = new String[blocks.length];
 				for(int i=0;i<blocks.length;i++) { 
 					blocks[i] = block_list.get(i);
-					trans_blkid[i] = String.valueOf(blocks[i].blockId);
-					trans_info += "_"+blocks[i].blockId;
+					trans_blkid[i] = String.valueOf(blocks[i].getBlockId());
+					trans_info += "_"+blocks[i].getBlockId();
 				}
 				trans_transferring_blk_num = blocks.length;
 				Helper.sendRequest(ip, trans_info);
@@ -596,7 +596,7 @@ public void initialize_parameters() {
 	public void loadbalance() throws InterruptedException, IOException {
 		
 		InetSocketAddress NameNode = Helper.createSocketAddress(dn.NNip+":22222");
-		Log.info("dn.id.datanodeUuid is "+dn.id.datanodeUuid);
+		Log.info("dn.id.datanodeUuid is "+dn.id.getDatanodeUuid());
 		Log.info("dn.storage.datanodeUuid is "+dn.storage.getDatanodeUuid());
 		System.out.println("\n\n\n\n\n\n\n\n");
 		System.out.println("began balancing");
@@ -606,7 +606,7 @@ public void initialize_parameters() {
 		
 		int blk_num = (int) (this.getDFSUsed()/(1024*1024*16));
 		
-		String init_message = dn.id.datanodeUuid + ","
+		String init_message = dn.id.getDatanodeUuid() + ","
 				 			  +blk_num + ","
 				 			  +movement_cost + ","
 				 			  +message_num + ","
@@ -1011,7 +1011,7 @@ public void initialize_parameters() {
 		System.out.println("elapsed time is "+et+" seconds");
 
 		System.out.println("send load banlance message to namenode");
-		String message = dn.id.datanodeUuid + ","
+		String message = dn.id.getDatanodeUuid() + ","
 						 +block_num + ","
 						 +movement_cost/(1024*1024) + ","
 						 +message_num + ","
@@ -1377,15 +1377,15 @@ public String toString() {
 		vector = new Vector();
 		String nodeinfo = this.getCapacity() + " " 
 						+ this.getDFSUsed() + " " 
-						+ dn.id.ipAddr + " "
-						+ dn.id.hostName + " "
-						+ dn.id.peerHostName + " "
-						+ dn.id.xferPort + " "
-						+ dn.id.infoPort + " "
-						+ dn.id.infoSecurePort + " "
-						+ dn.id.ipcPort + " "
-						+ dn.id.xferAddr + " "
-						+ dn.id.datanodeUuid + " "
+						+ dn.id.getIpAddr() + " "
+						+ dn.id.getHostName() + " "
+						+ dn.id.getPeerHostName() + " "
+						+ dn.id.getXferPort() + " "
+						+ dn.id.getInfoPort() + " "
+						+ dn.id.getInfoSecurePort() + " "
+						+ dn.id.getIpcPort() + " "
+						+ dn.id.getXferAddr() + " "
+						+ dn.id.getDatanodeUuid() + " "
 						+ NetworkTopology.DEFAULT_RACK + " "//location
 						+ dn.getFSDataset().getRemaining() + " "
 						//getblockPoolUsed

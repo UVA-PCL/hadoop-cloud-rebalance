@@ -845,7 +845,7 @@ class BPOfferService {
         
       Block toDelete[] = bcmd.getBlocks();
       for(int i=0;i<toDelete.length;i++) {
-    	  System.out.println("delete block is "+toDelete[i].blockId);
+    	  System.out.println("delete block is "+toDelete[i].getBlockId());
       }
       System.out.println("\n\n");
       try {
