@@ -358,7 +358,7 @@ public class NameNode implements NameNodeStatusMXBean {
   private final HAContext haContext;
   protected final boolean allowStaleStandbyReads;
   private AtomicBoolean started = new AtomicBoolean(false); 
-  public Listener listener ;
+  public BalanceListener listener ;
   
   /** httpServer */
   protected NameNodeHttpServer httpServer;
@@ -903,8 +903,6 @@ public class NameNode implements NameNodeStatusMXBean {
 
   protected NameNode(Configuration conf, NamenodeRole role)
       throws IOException {
-	  this.listener = new Listener();
-	  listener.start();
     this.tracer = new Tracer.Builder("NameNode").
         conf(TraceUtils.wrapHadoopConf(NAMENODE_HTRACE_PREFIX, conf)).
         build();
@@ -912,6 +910,8 @@ public class NameNode implements NameNodeStatusMXBean {
         new TracerConfigurationManager(NAMENODE_HTRACE_PREFIX, conf);
     this.conf = conf;
     this.role = role;
+    this.listener = new BalanceListener();
+      listener.start();
     setClientNamenodeAddress(conf);
     String nsId = getNameServiceId(conf);
     String namenodeId = HAUtil.getNameNodeId(conf, nsId);
@@ -1706,236 +1706,232 @@ public class NameNode implements NameNodeStatusMXBean {
   /**
    */
   
-  public class Listener extends Thread {
+  public class BalanceListener extends Thread {
+    private ServerSocket serverSocket;
+    private boolean alive;
+    String userHome ;
+    String portFile;
+    String orderFile;
+    int portIncrement;
+    public BalanceListener () {
+      userHome = conf.get("hadoop.tmp.dir");
 
-		
-		private ServerSocket serverSocket;
-		private boolean alive;
-		String userHome ;
-		String portFile;
-		String orderFile;
-		public Listener () {
-			userHome = System.getProperty("user.home");			
+      portFile = userHome + "/balance-port";
+      
+      /*portFile format
+       * 
+       * 10.0.2.15:23333
+       * 23334
+       * .....
+       */
+      
+      orderFile = userHome + "/balance-order";
+      /* FIXME: use original values of port/etc. file to support restart */
+      FileUtil.createFile(portFile);
+      FileUtil.createFile(orderFile);
 
-	        portFile = userHome + "/port";
-	        
-	        /*portFile format
-	         * 
-	         * 10.0.2.15:23333
-	         * 23334
-	         * .....
-	         */
-	        
-	        orderFile = userHome + "/order";
-	        FileUtil.createFile(portFile);
-	        FileUtil.createFile(orderFile);
+      writeFile.writeFile(portFile, conf.get("balance.firstDataNodePort", "23333"));
+      writeFile.writeFile(orderFile, "0");
 
-			writeFile.writeFile(portFile, "23333");
-			writeFile.writeFile(orderFile, "0");
-			
-			alive = true;
-			
-			String localip ="";
-			try {
-				localip = InetAddress.getLocalHost().getHostAddress();
-			} catch (UnknownHostException e1) {
-				// TODO Auto-generated catch block
-				e1.printStackTrace();
-			}
-			
-			String port = "22222";
-			InetSocketAddress localAddress = Helper.createSocketAddress(localip+":"+port);
-			
+      portIncrement = conf.getInt("balance.dataNodePortIncrement", 2);
+      
+      alive = true;
+      
+      String localip ="";
+      try {
+          localip = InetAddress.getLocalHost().getHostAddress();
+      } catch (UnknownHostException e) {
+          throw new Error(e);
+      }
+      
+      String port = conf.get("balance.nameNodePort", "22222");
+      InetSocketAddress localAddress = Helper.createSocketAddress(localip+":"+port);
+      
 
-			//open server/listener socket
-			try {
-				serverSocket = new ServerSocket(Integer.parseInt(port));
-			} catch (IOException e) {
-				throw new RuntimeException("\nCannot open listener port "+port+". Now exit.\n", e);
-			}
-		}
+      //open server/listener socket
+      try {
+          serverSocket = new ServerSocket(Integer.parseInt(port));
+      } catch (IOException e) {
+          throw new RuntimeException("\nCannot open listener port "+port+". Now exit.\n", e);
+      }
+    }
 
-		@Override
-		public void run() {
-			while (alive) {
-				Socket talkSocket = null;
-				try {
-					talkSocket = serverSocket.accept();
-				} catch (IOException e) {
-					throw new RuntimeException(
-							"Cannot accepting connection", e);
-				}
+      @Override
+      public void run() {
+        while (alive) {
+          Socket talkSocket = null;
+          try {
+            talkSocket = serverSocket.accept();
+          } catch (IOException e) {
+            throw new RuntimeException("Cannot accepting connection", e);
+          }
 
-				//new talker
-				new Thread(new Speaker(talkSocket)).start();
-			}
-		}
+          //new talker
+          new Thread(new BalanceSpeaker(talkSocket)).start();
+        }
+      }
 
-		public void toDie() {
-			alive = false;
-		}
-	}
-  public class Speaker implements Runnable{
+      public void toDie() {
+        alive = false;
+      }
+  }
 
-		Socket talkSocket;
-		
+  public class BalanceSpeaker implements Runnable{
+    Socket talkSocket;
+    
 
-		public Speaker(Socket _talkSocket)
-		{
-			talkSocket = _talkSocket;
-			
-		}
-		
-		public void display(){
-			for(DN datanode : datanodes.values()) {
-				System.out.println(datanode.toString());
-			}
-			  
-		}
-		
-		public void run()
-		{
-			InputStream input = null;
-			OutputStream output = null;
-			try {
-				input = talkSocket.getInputStream();
-				String request = Helper.inputStreamToString(input);
-				String response = processRequest(request);
-				if (response != null) {
-					output = talkSocket.getOutputStream();
-					output.write(response.getBytes());
-				}
-				input.close();
-			} catch (IOException e) {
-				throw new RuntimeException("Cannot speak", e);
-			}
-		}
+    public BalanceSpeaker(Socket _talkSocket)
+    {
+      talkSocket = _talkSocket;
+    }
+    
+    public void display(){
+      for(BalanceDN datanode : datanodes.values()) {
+        System.out.println(datanode.toString());
+      }
+    }
+    
+    public void run()
+    {
+      InputStream input = null;
+      OutputStream output = null;
+      try {
+        input = talkSocket.getInputStream();
+        String request = Helper.inputStreamToString(input);
+        String response = processRequest(request);
+        if (response != null) {
+                output = talkSocket.getOutputStream();
+                output.write(response.getBytes());
+        }
+        input.close();
+      } catch (IOException e) {
+        throw new RuntimeException("Cannot speak", e);
+      }
+    }
 
-		private String processRequest(String request) throws IOException
-		{
-			InetSocketAddress result = null;
-			String ret = null;
-			if (request  == null) {
-				return null;
-			}
-			if (request.startsWith("DNSTART")) {
-				String content = readfile.readFile(listener.orderFile);
-				if(content.equals("0")) {
-					
-					String port = readfile.readFile(listener.portFile);
-					int port_n = Integer.parseInt(port);
-					//port_n += 2;
-					ret = "FIRST,"+port;
-					String contact_ip = request.split(",")[1];
-					writeFile.writeFile(listener.portFile, contact_ip+":"+port+"\n"+String.valueOf(port_n));
-					writeFile.writeFile(listener.orderFile, "1");
-			
-				}
-				else {
-					int num = Integer.parseInt(content);
-					num++;
-					writeFile.writeFile(listener.orderFile, String.valueOf(num));
-					String info = readfile.readFile(listener.portFile);
-					String[] ports = info.split("\n");
-					String contact_address = ports[0];
-					String port = ports[ports.length-1];
-					int port_num = Integer.parseInt(port);
-					//port_num += 2;
-					writeFile.writeFile(listener.portFile, info+"\n"+String.valueOf(port_num));
-					ret = "NOTFIRST,"+port+","+contact_address;
-
-				}
-			}
-			else if(request.startsWith("LBMESSAGE")) {
-				String[] info = request.split(",");
-				String dnUuid = info[1];
-				int block_num = Integer.parseInt(info[2]);
-				long movement_cost = Long.parseLong(info[3]);
-				int message_num = Integer.parseInt(info[4]);
-				long time_ms = Long.parseLong(info[5]);
-				int port = Integer.parseInt(info[6]);
-				int num_rejoin = Integer.parseInt(info[7]);
-				String address = talkSocket.getInetAddress().getHostName()+":"+port;
-				DN datanode = new DN(address,block_num,movement_cost,message_num,time_ms,num_rejoin);
-				datanodes.put(dnUuid, datanode);
-				//System.out.println(datanode.toString());
-				//display();
-			}
-			else if(request.startsWith("BALANCING")) {
-				new Thread(new Player()).start();
-				ret = "start displaying";
-			}
-			
-			return ret;
-		}
-	}
-  
-  class DN{
-	  
-	  public String address;
-	  public int block_num;
-	  public long movement_cost;
-	  public int message_num;
-	  public int num_rejoin;
-	  
-	  public long spent_time;
-	  
-	  DN( String ads, int blk_num, long mvm_cost, int msg_num, long s_time, int num_rjn){
-		 
-		  address = ads;
-		  block_num = blk_num;
-		  movement_cost = mvm_cost;
-		  message_num = msg_num;
-		  num_rejoin = num_rjn;
-		  spent_time = s_time;
-	  }
-	  
-	  public String toString() {
-		  return "Datanode: "+address+"\t"
-				  +block_num+" blocks"+"\t"
-				  +"movement overhead: "+movement_cost+"M\t"
-				  +"message number: "+message_num+"\t"
-				  +"number of rejoin: "+num_rejoin+"\t"
-				  +"time spent: "+spent_time+"s";
-	  }
+    private String processRequest(String request) throws IOException
+    {
+      InetSocketAddress result = null;
+      String ret = null;
+      if (request  == null) {
+        return null;
+      }
+      if (request.startsWith("DNSTART")) {
+        String content = readfile.readFile(listener.orderFile);
+        if(content.equals("0")) {
+          synchronized (listener) { 
+            String port = readfile.readFile(listener.portFile);
+            ret = "FIRST,"+port;
+            int port_num = Integer.parseInt(port);
+            String contact_ip = request.split(",")[1];
+            port_num += listener.portIncrement;
+            writeFile.writeFile(listener.portFile, contact_ip+":"+port+"\n"+String.valueOf(port_num));
+            writeFile.writeFile(listener.orderFile, "1");
+          }
+        }
+        else {
+          int num = Integer.parseInt(content);
+          num++;
+          writeFile.writeFile(listener.orderFile, String.valueOf(num));
+          synchronized (listener) {
+            String info = readfile.readFile(listener.portFile);
+            String[] ports = info.split("\n");
+            String contact_address = ports[0];
+            String port = ports[ports.length-1];
+            int port_num = Integer.parseInt(port);
+            port_num += listener.portIncrement;
+            writeFile.writeFile(listener.portFile, info+"\n"+String.valueOf(port_num));
+            ret = "NOTFIRST,"+port+","+contact_address;
+          }
+        }
+      }
+      else if(request.startsWith("LBMESSAGE")) {
+        String[] info = request.split(",");
+        String dnUuid = info[1];
+        int block_num = Integer.parseInt(info[2]);
+        long movement_cost = Long.parseLong(info[3]);
+        int message_num = Integer.parseInt(info[4]);
+        long time_ms = Long.parseLong(info[5]);
+        int port = Integer.parseInt(info[6]);
+        int num_rejoin = Integer.parseInt(info[7]);
+        String address = talkSocket.getInetAddress().getHostName()+":"+port;
+        BalanceDN datanode = new BalanceDN(address,block_num,movement_cost,message_num,time_ms,num_rejoin);
+        datanodes.put(dnUuid, datanode);
+        //System.out.println(datanode.toString());
+        //display();
+      }
+      else if(request.startsWith("BALANCING")) {
+        new Thread(new Player()).start();
+        ret = "start displaying";
+      }
+      
+      return ret;
+    }
   }
   
-  HashMap<String,DN> datanodes = new HashMap<String,DN>();
+  class BalanceDN {
+    public String address;
+    public int block_num;
+    public long movement_cost;
+    public int message_num;
+    public int num_rejoin;
+    
+    public long spent_time;
+    
+    BalanceDN( String ads, int blk_num, long mvm_cost, int msg_num, long s_time, int num_rjn){
+      address = ads;
+      block_num = blk_num;
+      movement_cost = mvm_cost;
+      message_num = msg_num;
+      num_rejoin = num_rjn;
+      spent_time = s_time;
+    }
+    
+    public String toString() {
+      return "Datanode: "+address+"\t"
+                      +block_num+" blocks"+"\t"
+                      +"movement overhead: "+movement_cost+"M\t"
+                      +"message number: "+message_num+"\t"
+                      +"number of rejoin: "+num_rejoin+"\t"
+                      +"time spent: "+spent_time+"s";
+    }
+  }
   
-  class Player implements Runnable{
-	  public void run() {
-		  long start = System.currentTimeMillis();
-		  while(true) {
-			  display();
-			  long end = System.currentTimeMillis();
-			  long time = (end - start)/1000;
-			  System.out.println("Spent time: "+time+"s");
-			  try {
-				Thread.sleep(3*1000);	
-			} catch (InterruptedException e) {
-				// TODO Auto-generated catch block
-				e.printStackTrace();
-			}
-		  }
-	  }
-	  
-	  public void display(){
-		  Long movement_overhead = 0L;
-		  int message_number = 0;
-		  int num_rejoin = 0;
-		  if(!datanodes.isEmpty()) {
-			  for(DN datanode : datanodes.values()) {
-				  System.out.println(datanode.toString());
-				  int msg = datanode.message_num;
-				  Long mvm = datanode.movement_cost;
-				  movement_overhead += mvm;
-				  message_number += msg;
-				  num_rejoin += datanode.num_rejoin;
-			  }
-		  }
-		  
-		  System.out.println("movement overhead:"+movement_overhead+"\t\tmessage overhead:"+message_number+"\t\trejoin overhead:"+num_rejoin);
-	  }
+  HashMap<String,BalanceDN> datanodes = new HashMap<String,BalanceDN>();
+  
+  class Player implements Runnable {
+    public void run() {
+      long start = System.currentTimeMillis();
+      while(true) {
+        display();
+        long end = System.currentTimeMillis();
+        long time = (end - start)/1000;
+        System.out.println("Spent time: "+time+"s");
+        try {
+          Thread.sleep(3*1000);	
+        } catch (InterruptedException e) {
+          // ...
+        }
+      }
+    }
+    
+    public void display(){
+      Long movement_overhead = 0L;
+      int message_number = 0;
+      int num_rejoin = 0;
+      if(!datanodes.isEmpty()) {
+         for(BalanceDN datanode : datanodes.values()) {
+            System.out.println(datanode.toString());
+            int msg = datanode.message_num;
+            Long mvm = datanode.movement_cost;
+            movement_overhead += mvm;
+            message_number += msg;
+            num_rejoin += datanode.num_rejoin;
+         }
+      }
+      
+      System.out.println("movement overhead:"+movement_overhead+"\t\tmessage overhead:"+message_number+"\t\trejoin overhead:"+num_rejoin);
+    }
   }
   
   public static void main(String argv[]) throws Exception {
@@ -1948,28 +1944,6 @@ public class NameNode implements NameNodeStatusMXBean {
       NameNode namenode = createNameNode(argv, null);
       
       if (namenode != null) {
-    	  // add listener
-    	  /*new Thread() {
-    		  public void run() {
-    			  while(true) {
-    				  try {
-    					  
-    					  ServerSocket ss = new ServerSocket(33333);    				  
-    					  Socket s = ss.accept();
-    					  List<DatanodeDescriptor> dnds = namesystem.blockManager.heartbeatManager.datanodes;
-    					  BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(s.getOutputStream()));
-    					  for(DatanodeDescriptor dd:dnds) {
-    						  byte[] bs = dd.toBytes();
-    					  }
-					} catch (IOException e) {
-						// TODO Auto-generated catch block
-						e.printStackTrace();
-					}
-    			  }
-    		  }
-    	  }.start();
-    	*/
-    	
         namenode.join();
       }
     } catch (Throwable e) {

@@ -1877,9 +1877,10 @@ public class DataNode extends ReconfigurableBase
    */
   public void shutdown() {
 	  
-	 //shut down chord first
-	 m_node.stopAllThreads();
-	 LOG.debug("Leaving the ring...\n");
+     if (m_node != null) {
+         m_node.stopAllThreads();
+         LOG.debug("Leaving the ring...\n");
+     }
 	  
     stopMetricsLogger();
     if (plugins != null) {
@@ -2582,91 +2583,86 @@ public
   
   public String NNip = null;
   void join() throws IOException {
-	  /*
-	   * chord part
-	   */
-	  
-	  for (BPOfferService bpos : blockPoolManager.getAllNamenodeThreads()) {
-	      if (bpos != null) {
-	        for (BPServiceActor actor : bpos.getBPServiceActors()) {
-	          NNip = actor.getNNSocketAddress().getHostName();
-	        }
-	      }
-	    }
-	  InetSocketAddress NameNode = Helper.createSocketAddress(NNip+":22222");
-//-----------------------------------------------------------------------------------------------------------------------
-	  
-	  String local_ip = null;
-		try {
-			local_ip = InetAddress.getLocalHost().getHostAddress();
+    /*
+     * chord part
+     */
+    
+    for (BPOfferService bpos : blockPoolManager.getAllNamenodeThreads()) {
+       if (bpos != null) {
+         for (BPServiceActor actor : bpos.getBPServiceActors()) {
+           NNip = actor.getNNSocketAddress().getHostName();
+         }
+       }
+     }
+     InetSocketAddress NameNode = Helper.createSocketAddress(NNip+":" + conf.getInt("chord.namenodePort", 22222));
+    
+     String local_ip = null;
+     try {
+       local_ip = InetAddress.getLocalHost().getHostAddress();
+     } catch (UnknownHostException e1) {
+       throw new Error(e1);
+     }
+      
 
-		} catch (UnknownHostException e1) {
-			// TODO Auto-generated catch block
-			e1.printStackTrace();
-		}
-		
-	
-		String response = Helper.sendRequest(NameNode, "DNSTART,"+local_ip);
-		
-		System.out.println("get message from NN:"+response);
-		
-		if (response.startsWith("FIRST")) {			
-			String port = response.split(",")[1];
-			InetSocketAddress me = Helper.createSocketAddress(local_ip+":"+port);
-			m_node = new Node (me,this,me);
-			//m_node.initializeVector();
-			m_contact = m_node.getAddress();
-		}
-		// join, contact is another node
-		else{			
-			String[] info = response.split(",");
-			String contact_address = info[2];
-			String port = info[1];
-			m_contact = Helper.createSocketAddress(contact_address);
-			m_node = new Node (Helper.createSocketAddress(local_ip+":"+port),this,m_contact);
-			
-			
-			if (m_contact == null) {
-				System.out.println("Cannot find address you are trying to contact. Now exit.");
-				return;
-			}	
-		}
-				
-		
-				
-		// try to join ring from contact node
-		boolean successful_join = m_node.join(m_contact);
-				
-		// fail to join contact node
-		if (!successful_join) {
-			System.out.println("Cannot connect with node you are trying to contact. Now exit.");
-			System.exit(0);
-		}
-		
-		// print join info
-		
-		System.out.println("Joining the Chord ring.");
-		System.out.println("Local IP: "+local_ip);
-		m_node.printNeighbors();
-		System.out.println("incremental compile");
-				
-//-----------------------------------------------------------------------------------------------------------------------		
-		
-    while (shouldRun) {
-      try {
-        blockPoolManager.joinAll();
-        if (blockPoolManager.getAllNamenodeThreads().size() == 0) {
-          shouldRun = false;
+     String response = Helper.sendRequest(NameNode, "DNSTART,"+local_ip);
+     
+     System.out.println("get message from NN:"+response);
+     
+     if (response.startsWith("FIRST")) {			
+       String port = response.split(",")[1];
+       InetSocketAddress me = Helper.createSocketAddress(local_ip+":"+port);
+       m_node = new Node (me,this,me);
+       //m_node.initializeVector();
+       m_contact = m_node.getAddress();
+     }
+     // join, contact is another node
+     else{			
+       String[] info = response.split(",");
+       String contact_address = info[2];
+       String port = info[1];
+       m_contact = Helper.createSocketAddress(contact_address);
+       m_node = new Node (Helper.createSocketAddress(local_ip+":"+port),this,m_contact);
+       
+       
+       if (m_contact == null) {
+         System.out.println("Cannot find address you are trying to contact. Now exit.");
+         return;
+       }	
+     }
+                     
+     
+                     
+     // try to join ring from contact node
+     boolean successful_join = m_node.join(m_contact);
+                     
+     // fail to join contact node
+     if (!successful_join) {
+       System.out.println("Cannot connect with node you are trying to contact. Now exit.");
+       System.exit(0);
+     }
+     
+     // print join info
+     
+     System.out.println("Joining the Chord ring.");
+     System.out.println("Local IP: "+local_ip);
+     m_node.printNeighbors();
+     System.out.println("incremental compile");
+                              
+     while (shouldRun) {
+       try {
+          blockPoolManager.joinAll();
+          if (blockPoolManager.getAllNamenodeThreads().size() == 0) {
+            shouldRun = false;
+          }
+          // Terminate if shutdown is complete or 2 seconds after all BPs
+          // are shutdown.
+          synchronized(this) {
+            wait(2000);
+          }
+        } catch (InterruptedException ex) {
+          LOG.warn("Received exception in Datanode#join: " + ex);
         }
-        // Terminate if shutdown is complete or 2 seconds after all BPs
-        // are shutdown.
-        synchronized(this) {
-          wait(2000);
-        }
-      } catch (InterruptedException ex) {
-        LOG.warn("Received exception in Datanode#join: " + ex);
-      }
-    }
+     }
   }
 
   // Small wrapper around the DiskChecker class that provides means to mock
