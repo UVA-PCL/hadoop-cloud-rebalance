@@ -3,9 +3,11 @@ on top of Hadoop HDFS.
 
 The load balancing implementation is written by Zeitan Liu, with some revisions by Charles Reiss, under the supervision of Haiying Shen.
 
-It incorporates a Chord implementation written Chuan Xiu which is available under an MIT license (see below).
+It incorporates a Chord implementation written Chuan Xia which is available under an MIT license (see below).
 
 For an example of how to use this, see a seperate repository for experiment running scripts [to be linked].
+
+# Acknowledgements
 
 We would like to thank the collabarators of this project:
 
